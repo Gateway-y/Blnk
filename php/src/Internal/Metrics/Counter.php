@@ -20,11 +20,13 @@ declare(strict_types=1);
 
 namespace Blnk\Internal\Metrics;
 
+use Blnk\Internal\Traces\Clock;
+
 /**
- * Counter is the in-memory replacement for an OTel `metric.Int64Counter`
- * (per PORTING.md: "internal/metrics → simple in-memory counters class with
- * the same method names"). Values accumulate per attribute set within the
- * current PHP process only; nothing is exported.
+ * Counter is the in-memory `metric.Int64Counter` of the PHP port: a
+ * monotonic cumulative sum per attribute set within the current PHP
+ * process. The {@see MeterProvider} collects it as an OTLP `Sum`
+ * (cumulative temporality, monotonic) for the Prometheus and OTLP exporters.
  */
 final class Counter
 {
@@ -34,6 +36,9 @@ final class Counter
 
     public readonly string $unit;
 
+    /** Creation time — the start time of the cumulative data points. */
+    private int $createdAtUnixNano;
+
     /** @var array<string, int> total per serialized attribute set */
     private array $values = [];
 
@@ -42,6 +47,7 @@ final class Counter
         $this->name = $name;
         $this->description = $description;
         $this->unit = $unit;
+        $this->createdAtUnixNano = Clock::nowUnixNano();
     }
 
     /**
@@ -53,6 +59,7 @@ final class Counter
     {
         $key = MetricAttributes::key($attributes);
         $this->values[$key] = ($this->values[$key] ?? 0) + $incr;
+        MeterProvider::onMeasurement();
     }
 
     /**
@@ -75,5 +82,34 @@ final class Counter
     public function reset(): void
     {
         $this->values = [];
+        $this->createdAtUnixNano = Clock::nowUnixNano();
+    }
+
+    /**
+     * collect returns the instrument as OTLP-shaped metric data (a cumulative
+     * monotonic Sum with one data point per attribute set).
+     *
+     * @return array<string, mixed>
+     */
+    public function collect(int $timeUnixNano): array
+    {
+        $points = [];
+        foreach ($this->values as $key => $value) {
+            $points[] = [
+                'attributes' => MetricAttributes::decode((string) $key),
+                'startTimeUnixNano' => $this->createdAtUnixNano,
+                'timeUnixNano' => $timeUnixNano,
+                'value' => $value,
+            ];
+        }
+        return [
+            'name' => $this->name,
+            'description' => $this->description,
+            'unit' => $this->unit,
+            'kind' => 'sum',
+            'monotonic' => true,
+            'integer' => true,
+            'dataPoints' => $points,
+        ];
     }
 }

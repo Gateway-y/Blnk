@@ -21,12 +21,14 @@ declare(strict_types=1);
 namespace Blnk\Api\Middleware;
 
 use Blnk\Api\Json;
+use Blnk\Api\Middleware\Tollbooth\Clock;
+use Blnk\Api\Middleware\Tollbooth\ExpirableOptions;
+use Blnk\Api\Middleware\Tollbooth\Limiter;
+use Blnk\Api\Middleware\Tollbooth\TokenBucketCache;
+use Blnk\Api\Middleware\Tollbooth\Tollbooth;
 use Blnk\Config\Configuration;
 use Blnk\Internal\ApiError\ErrorCode;
 use Blnk\Internal\ApiError\ErrorResponse;
-use Blnk\Internal\Log;
-use Blnk\Internal\Redis\PoolConfig;
-use Blnk\Internal\Redis\RedisDb;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
@@ -39,99 +41,82 @@ use Slim\Psr7\Factory\ResponseFactory;
  * RateLimitMiddleware creates a middleware for rate limiting using Tollbooth.
  * It sets up rate limiting based on the configuration parameters and applies it to incoming requests.
  *
- * Documented divergence: Tollbooth keeps one in-memory token bucket
- * (golang.org/x/time/rate) per client key inside the Go process. A PHP
- * process serves one request at a time, so the buckets live in Redis instead
- * and are updated atomically by a Lua script implementing the same token
- * bucket (rate = requests_per_second, capacity = burst, refill on demand). The
- * bucket key mirrors Tollbooth's default `BuildKeys`: remote address + request
- * path. Buckets expire after the configured cleanup interval
- * (Tollbooth's DefaultExpirationTTL). When Redis is unreachable the request is
- * allowed through (fail-open) and the failure is logged — Tollbooth cannot
- * fail, so blocking traffic on an infrastructure error would be new behavior.
+ * Tollbooth (github.com/didip/tollbooth/v7 v7.0.2) is ported 1:1 into
+ * {@see \Blnk\Api\Middleware\Tollbooth}: the request is keyed by
+ * "<client IP>|<path>|" where the IP comes from X-Forwarded-For (last entry),
+ * then X-Real-IP, then the connection's remote address, canonicalized to the
+ * /64 prefix for IPv6; one token bucket per key (x/time/rate semantics: rate
+ * = requests_per_second, capacity = burst, initially full) that expires
+ * cleanup_interval_sec after its creation; a limited request is answered
+ * with Tollbooth's 429 and message; every inspected request carries the
+ * X-Rate-Limit-* and RateLimit-* headers. The only thing PHP cannot mirror
+ * literally — the buckets living in the memory of the Go process — becomes
+ * a file store private to this PHP server ({@see TokenBucketCache}), shared
+ * by its worker processes and by nothing else, so the limiter stays
+ * per-instance rather than cluster-wide.
+ *
+ * Gin sets Tollbooth's headers on the writer before running the handler, so
+ * they also appear on the responses written after the chain — the 500 its
+ * recovery writes for a panicking handler and the NoRoute 404. Here Slim
+ * raises those conditions as exceptions from the innermost kernel; they
+ * unwind past this middleware to {@see \Blnk\Api\LogrusRecovery}, whose
+ * synthesized 500/404 therefore carries no rate-limit headers (the limiter
+ * itself has still counted the request).
  */
 final class RateLimitMiddleware implements MiddlewareInterface
 {
-    /** Tollbooth's default message and status for a limited request. */
-    public const LimitMessage = 'You have reached maximum request limit.';
-    public const LimitStatusCode = 429;
-
-    /** Redis key prefix of the per-client token buckets. */
-    public const KeyPrefix = 'blnk:ratelimit:';
-
-    /**
-     * Token bucket, executed atomically on the Redis server.
-     * KEYS[1] = bucket key; ARGV = rate (tokens/s), burst, now (seconds, float), ttl (seconds).
-     * Returns 1 when a token was taken (request allowed), 0 otherwise.
-     */
-    private const TOKEN_BUCKET_SCRIPT = <<<'LUA'
-local key = KEYS[1]
-local rate = tonumber(ARGV[1])
-local burst = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-local ttl = tonumber(ARGV[4])
-local data = redis.call('HMGET', key, 'tokens', 'ts')
-local tokens = tonumber(data[1])
-local ts = tonumber(data[2])
-if tokens == nil or ts == nil then
-  tokens = burst
-  ts = now
-end
-local elapsed = now - ts
-if elapsed < 0 then elapsed = 0 end
-tokens = tokens + elapsed * rate
-if tokens > burst then tokens = burst end
-local allowed = 0
-if tokens >= 1 then
-  tokens = tokens - 1
-  allowed = 1
-end
-redis.call('HSET', key, 'tokens', tokens, 'ts', now)
-redis.call('EXPIRE', key, ttl)
-return allowed
-LUA;
-
-    private bool $enabled;
-    private float $rps = 0.0;
-    private int $burst = 0;
-    private int $ttl = 0;
-    private Configuration $conf;
-    private ?\Redis $redis;
+    /** The Tollbooth limiter; null when rate limiting is disabled. */
+    private ?Limiter $lmt = null;
 
     /**
      * Parameters:
      * - $conf: The configuration object containing rate limit settings.
-     * - $redis: Optional Redis client; when omitted one is opened lazily from
-     *   the configured Redis DNS on the first limited request.
+     * - $bucketDir: Directory of the token bucket files; the server's default
+     *   directory ({@see TokenBucketCache::defaultDir()}) when null.
      */
-    public function __construct(Configuration $conf, ?\Redis $redis = null)
+    public function __construct(Configuration $conf, ?string $bucketDir = null)
     {
-        $this->conf = $conf;
-        $this->redis = $redis;
-
         if ($conf->rateLimit->requestsPerSecond === null || $conf->rateLimit->burst === null) {
             // Rate limiting is disabled if RequestsPerSecond or Burst are not set.
-            $this->enabled = false;
-
             return;
         }
 
-        $this->enabled = true;
-        $this->rps = $conf->rateLimit->requestsPerSecond;
-        $this->burst = $conf->rateLimit->burst;
+        $rps = $conf->rateLimit->requestsPerSecond;
+        $burst = $conf->rateLimit->burst;
         $cleanupSec = Configuration::DEFAULT_CLEANUP_SEC;
         if ($conf->rateLimit->cleanupIntervalSec !== null) {
             $cleanupSec = $conf->rateLimit->cleanupIntervalSec;
         }
-        $this->ttl = $cleanupSec;
+        $ttl = $cleanupSec * Clock::Second;
+
+        // Create a new Tollbooth limiter with the specified rate and expiration time.
+        $lmt = Tollbooth::newLimiter($rps, new ExpirableOptions(
+            defaultExpirationTTL: $ttl,
+        ), $bucketDir ?? TokenBucketCache::defaultDir(self::instanceIdentity($conf)));
+        $lmt->setBurst($burst);
+
+        $this->lmt = $lmt;
     }
 
     /**
      * RateLimitMiddleware — static factory mirroring the Go function name.
+     *
+     * Parameters:
+     * - $conf: The configuration object containing rate limit settings.
+     *
+     * Returns a middleware that applies rate limiting to requests.
      */
-    public static function rateLimitMiddleware(Configuration $conf, ?\Redis $redis = null): self
+    public static function rateLimitMiddleware(Configuration $conf, ?string $bucketDir = null): self
     {
-        return new self($conf, $redis);
+        return new self($conf, $bucketDir);
+    }
+
+    /**
+     * limiter exposes the Tollbooth limiter (null when disabled).
+     */
+    public function limiter(): ?Limiter
+    {
+        return $this->lmt;
     }
 
     /**
@@ -139,87 +124,33 @@ LUA;
      */
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        if (!$this->enabled) {
+        if ($this->lmt === null) {
             return $handler->handle($request);
         }
 
-        $remoteAddr = (string) ($request->getServerParams()['REMOTE_ADDR'] ?? '');
-        $limited = !$this->allow($remoteAddr, $request->getUri()->getPath());
-
-        if ($limited) {
+        $headers = [];
+        $httpError = Tollbooth::limitByRequest($this->lmt, $headers, $request);
+        if ($httpError !== null) {
             // Respond with an error if the request exceeds the rate limit.
             // Tollbooth's status code stays authoritative for the response.
-            $resp = ErrorResponse::newErrorResponse(ErrorCode::ErrGenRateLimited, self::LimitMessage, null);
-            $response = Json::write((new ResponseFactory())->createResponse(), self::LimitStatusCode, [
-                'error' => self::LimitMessage,
-                'error_detail' => ['code' => $resp->code, 'message' => $resp->message],
+            $response = Json::write((new ResponseFactory())->createResponse(), $httpError->statusCode, [
+                'error' => $httpError->message,
+                'error_detail' => ErrorResponse::newErrorResponse(ErrorCode::ErrGenRateLimited, $httpError->message, null)->jsonSerialize()['error'],
             ]);
 
-            return $this->withTollboothHeaders($response, $request, $remoteAddr);
+            return Tollbooth::applyHeaders($response, $headers);
         }
 
-        return $this->withTollboothHeaders($handler->handle($request), $request, $remoteAddr);
+        return Tollbooth::applyHeaders($handler->handle($request), $headers);
     }
 
     /**
-     * withTollboothHeaders adds the informational headers Tollbooth sets on
-     * every request it inspects.
+     * instanceIdentity distinguishes this server's bucket store from that of
+     * another Blnk deployment on the same host (the code path and user are
+     * added by TokenBucketCache::defaultDir): the configured server port.
      */
-    private function withTollboothHeaders(ResponseInterface $response, ServerRequestInterface $request, string $remoteAddr): ResponseInterface
+    private static function instanceIdentity(Configuration $conf): string
     {
-        return $response
-            ->withHeader('X-Rate-Limit-Limit', sprintf('%.2f', $this->rps))
-            ->withHeader('X-Rate-Limit-Duration', '1')
-            ->withHeader('X-Rate-Limit-Request-Forwarded-For', $request->getHeaderLine('X-Forwarded-For'))
-            ->withHeader('X-Rate-Limit-Request-Remote-Addr', $remoteAddr);
-    }
-
-    /**
-     * allow takes one token from the client's bucket, reporting whether the
-     * request may proceed.
-     */
-    private function allow(string $remoteAddr, string $path): bool
-    {
-        $client = $this->client();
-        if ($client === null) {
-            return true;
-        }
-
-        $key = self::KeyPrefix . $remoteAddr . ':' . $path;
-        try {
-            $result = $client->eval(self::TOKEN_BUCKET_SCRIPT, [
-                $key,
-                (string) $this->rps,
-                (string) $this->burst,
-                sprintf('%.6F', microtime(true)),
-                (string) max(1, $this->ttl),
-            ], 1);
-        } catch (\Throwable $e) {
-            Log::get()->error('rate limiter: redis evaluation failed, allowing request', ['error' => $e->getMessage()]);
-
-            return true;
-        }
-
-        return (int) $result === 1;
-    }
-
-    private function client(): ?\Redis
-    {
-        if ($this->redis !== null) {
-            return $this->redis;
-        }
-        try {
-            $this->redis = RedisDb::newRedisClient(
-                [$this->conf->redis->dns],
-                $this->conf->redis->skipTLSVerify,
-                new PoolConfig($this->conf->redis->poolSize, $this->conf->redis->minIdleConns)
-            )->client();
-        } catch (\Throwable $e) {
-            Log::get()->error('rate limiter: unable to connect to redis, allowing request', ['error' => $e->getMessage()]);
-
-            return null;
-        }
-
-        return $this->redis;
+        return 'port=' . $conf->server->port;
     }
 }

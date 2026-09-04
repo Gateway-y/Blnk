@@ -21,16 +21,19 @@ declare(strict_types=1);
 namespace Blnk\Internal\Metrics;
 
 /**
- * Port of Go `internal/metrics` (`metrics.go`) as simple in-memory
- * instruments, per PORTING.md. The Go package-level instrument variables
- * (`metrics.TransactionTotal.Add(...)`) become static accessors
- * (`Metrics::transactionTotal()->add(...)`). Instrument names, descriptions
- * and units are kept identical; nothing is exported (see
- * {@see MonitoringExporter} for the logging stub replacing the remote
- * exporter).
+ * Port of Go `internal/metrics` (`metrics.go`): the instruments of the
+ * package-level meter `otel.Meter("blnk")`, kept in memory by the PHP port.
+ * The Go package-level instrument variables (`metrics.TransactionTotal.Add(...)`)
+ * become static accessors (`Metrics::transactionTotal()->add(...)`).
+ * Instrument names, descriptions, units and value types are identical; the
+ * {@see MeterProvider} installed by `Tracer::setupOTelSDK()` collects them
+ * for the Prometheus /metrics endpoint and the OTLP push exporters.
  */
 final class Metrics
 {
+    /** The meter name (`otel.Meter("blnk")`), i.e. the instrumentation scope. */
+    public const ScopeName = 'blnk';
+
     private static bool $initialized = false;
 
     /**
@@ -178,7 +181,8 @@ final class Metrics
         self::$transactionBatchSize = new Histogram(
             'blnk.transaction.batch.size',
             'Number of transactions in a coalesced batch',
-            '{transaction}'
+            '{transaction}',
+            true // metric.Int64Histogram
         );
 
         self::$transactionBatchTotal = new Counter(
@@ -208,13 +212,15 @@ final class Metrics
         self::$chainBacklog = new Gauge(
             'blnk.chain.backlog',
             'Number of transactions not yet sealed into the hash chain',
-            '{transaction}'
+            '{transaction}',
+            true // metric.Int64Gauge
         );
 
         self::$chainHeadSeq = new Gauge(
             'blnk.chain.head_seq',
             'Sequence number of the hash-chain head',
-            '{transaction}'
+            '{transaction}',
+            true // metric.Int64Gauge
         );
 
         self::$chainLagSeconds = new Gauge(
@@ -321,27 +327,44 @@ final class Metrics
     }
 
     /**
+     * instruments lists every instrument of the "blnk" meter, in creation
+     * order — what the {@see MeterProvider} collects.
+     *
+     * @return array<int, Counter|Histogram|Gauge>
+     */
+    public static function instruments(): array
+    {
+        self::init();
+        return [
+            self::$transactionTotal,
+            self::$transactionDuration,
+            self::$transactionRejectedTotal,
+            self::$queueEnqueuedTotal,
+            self::$queueProcessingDuration,
+            self::$balanceCreatedTotal,
+            self::$inflightCommitTotal,
+            self::$inflightVoidTotal,
+            self::$transactionBatchSize,
+            self::$transactionBatchTotal,
+            self::$hotpairsContentionTotal,
+            self::$hotpairsLaneRoutedTotal,
+            self::$workerRetriesTotal,
+            self::$chainBacklog,
+            self::$chainHeadSeq,
+            self::$chainLagSeconds,
+        ];
+    }
+
+    /**
      * Snapshot of every instrument's in-memory state, for debugging/inspection.
      *
      * @return array<string, array<string, mixed>>
      */
     public static function snapshot(): array
     {
-        self::init();
         $out = [];
-        foreach ([
-            self::$transactionTotal, self::$transactionRejectedTotal, self::$queueEnqueuedTotal,
-            self::$balanceCreatedTotal, self::$inflightCommitTotal, self::$inflightVoidTotal,
-            self::$transactionBatchTotal, self::$hotpairsContentionTotal,
-            self::$hotpairsLaneRoutedTotal, self::$workerRetriesTotal,
-        ] as $counter) {
-            $out[$counter->name] = $counter->values();
-        }
-        foreach ([self::$transactionDuration, self::$queueProcessingDuration, self::$transactionBatchSize] as $histogram) {
-            $out[$histogram->name] = $histogram->values();
-        }
-        foreach ([self::$chainBacklog, self::$chainHeadSeq, self::$chainLagSeconds] as $gauge) {
-            $out[$gauge->name] = $gauge->values();
+        foreach (self::instruments() as $instrument) {
+            $out[$instrument->name] = $instrument->values();
         }
         return $out;
     }

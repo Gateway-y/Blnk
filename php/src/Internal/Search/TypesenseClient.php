@@ -42,12 +42,34 @@ use GuzzleHttp\Exception\BadResponseException;
  * - GET    /collections/{name}/documents/search     (search)
  * - POST   /multi_search                            (multi search)
  *
- * The Go client's circuit breaker options (max requests 50, interval 2m,
- * timeout 1m) have no Guzzle equivalent and are not ported; the 5s connection
- * timeout is kept.
+ * Like typesense-go (`typesense.NewClient` with `WithConnectionTimeout(5s)`,
+ * `WithCircuitBreakerMaxRequests(50)`, `WithCircuitBreakerInterval(2m)`,
+ * `WithCircuitBreakerTimeout(1m)`), every HTTP request goes through an
+ * `http.Client{Timeout: 5s}` equivalent (Guzzle connect + total timeout of
+ * 5s) wrapped in a gobreaker {@see CircuitBreaker} named "typesenseClient":
+ * transport failures count as failures (HTTP error statuses do not, exactly
+ * like `http.Client.Do`), the breaker opens when more than 100 requests in
+ * a 2-minute window failed at a ratio above 50%, stays open for 1 minute and
+ * then lets at most 50 trial requests through. A rejected request surfaces
+ * as a {@see SearchException} carrying gobreaker's "circuit breaker is open"
+ * / "too many requests" message.
  */
 final class TypesenseClient
 {
+    /** typesense-go defaultCircuitBreakerName */
+    public const DefaultCircuitBreakerName = 'typesenseClient';
+
+    /** typesense-go defaultConnectionTimeout (5 * time.Second), seconds. */
+    public const DefaultConnectionTimeoutSec = 5;
+
+    /** typesense.WithCircuitBreakerMaxRequests(50) */
+    public const CircuitBreakerMaxRequests = 50;
+
+    /** typesense.WithCircuitBreakerInterval(2 * time.Minute), seconds. */
+    public const CircuitBreakerIntervalSec = 120.0;
+
+    /** typesense.WithCircuitBreakerTimeout(1 * time.Minute), seconds. */
+    public const CircuitBreakerTimeoutSec = 60.0;
     public const CollectionLedgers = 'ledgers';
     public const CollectionBalances = 'balances';
     public const CollectionTransactions = 'transactions';
@@ -60,20 +82,39 @@ final class TypesenseClient
     private string $host;
     private string $apiKey;
     private ClientInterface $client;
+    private CircuitBreaker $breaker;
 
     /**
      * newTypesenseClient initializes and returns a new Typesense client instance.
      *
      * @param string[] $hosts Typesense server URLs; like Go's
      *                        typesense.WithServer(hosts[0]) only the first is used.
+     * @param CircuitBreaker|null $breaker the circuit breaker wrapping every request
+     *                                     (defaults to the typesense-go configuration)
      */
-    public function __construct(string $apiKey, array $hosts, ?ClientInterface $httpClient = null)
+    public function __construct(string $apiKey, array $hosts, ?ClientInterface $httpClient = null, ?CircuitBreaker $breaker = null)
     {
         $this->apiKey = $apiKey;
         $this->host = rtrim((string) ($hosts[0] ?? ''), '/');
+        // http.Client{Timeout: ConnectionTimeout} — the whole exchange is bounded.
         $this->client = $httpClient ?? new GuzzleClient([
-            'connect_timeout' => 5,
+            'connect_timeout' => self::DefaultConnectionTimeoutSec,
+            'timeout' => self::DefaultConnectionTimeoutSec,
         ]);
+        $this->breaker = $breaker ?? CircuitBreaker::newGoBreaker(
+            self::DefaultCircuitBreakerName,
+            self::CircuitBreakerMaxRequests,
+            self::CircuitBreakerIntervalSec,
+            self::CircuitBreakerTimeoutSec
+        );
+    }
+
+    /**
+     * The circuit breaker guarding the Typesense HTTP client.
+     */
+    public function breaker(): CircuitBreaker
+    {
+        return $this->breaker;
     }
 
     /**
@@ -847,13 +888,21 @@ final class TypesenseClient
     /**
      * Performs a Typesense HTTP request and decodes the JSON response.
      *
+     * The transport call runs inside the circuit breaker exactly like
+     * typesense-go's `circuit.HTTPClient.Do`: only a failed exchange
+     * (connection error, timeout) is a breaker failure; an HTTP error status
+     * is a successful exchange and is turned into a SearchException below,
+     * mirroring `typesense.HTTPError` ("status: <code> response: <body>").
+     *
      * @param array<string, mixed>|null $query
      * @param array<string, mixed>|null $body
      *
      * @return array<string, mixed>
      *
-     * @throws SearchException on transport failure or non-2xx response; the
-     *                         message embeds "status: <code>" and the response body
+     * @throws SearchException on transport failure, breaker rejection
+     *                         ("circuit breaker is open" / "too many requests")
+     *                         or non-2xx response; the message embeds
+     *                         "status: <code>" and the response body
      */
     private function request(string $method, string $path, ?array $query = null, ?array $body = null): array
     {
@@ -879,7 +928,10 @@ final class TypesenseClient
         }
 
         try {
-            $resp = $this->client->request($method, $this->host . $path, $options);
+            $url = $this->host . $path;
+            $resp = $this->breaker->execute(function () use ($method, $url, $options) {
+                return $this->client->request($method, $url, $options);
+            });
         } catch (BadResponseException $e) {
             $code = $e->getResponse() !== null ? $e->getResponse()->getStatusCode() : 0;
             throw new SearchException(sprintf('status: %d response: %s', $code, $e->getMessage()), $code, $e);

@@ -39,8 +39,8 @@ class Locker
     /** lockBackoffMax (Go: 100 * time.Millisecond), in seconds. */
     public const LOCK_BACKOFF_MAX = 0.1;
 
-    /** Redis client for interacting with Redis. */
-    protected \Redis $client;
+    /** Redis client for interacting with Redis (standalone or cluster). */
+    protected \Redis|\RedisCluster $client;
 
     /** The unique key for the lock in Redis. */
     protected string $key;
@@ -56,7 +56,7 @@ class Locker
      * - $key: The unique identifier for the lock.
      * - $value: A unique value to associate with the lock (ensures lock ownership).
      */
-    public function __construct(\Redis $client, string $key, string $value)
+    public function __construct(\Redis|\RedisCluster $client, string $key, string $value)
     {
         $this->client = $client;
         $this->key = $key;
@@ -84,7 +84,7 @@ class Locker
         try {
             // SET key value NX PX <ms> — the SetNX(+TTL) of the Go client.
             $success = $this->client->set($this->key, $this->value, ['nx', 'px' => (int) round($timeout * 1000)]);
-        } catch (\RedisException $e) {
+        } catch (\RedisException|\RedisClusterException $e) {
             throw new \RuntimeException($e->getMessage(), 0, $e);
         }
         if ($success === false) {
@@ -105,7 +105,7 @@ class Locker
         $script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
         try {
             $result = $this->client->eval($script, [$this->key, $this->value], 1);
-        } catch (\RedisException $e) {
+        } catch (\RedisException|\RedisClusterException $e) {
             throw new \RuntimeException($e->getMessage(), 0, $e);
         }
         if ((int) $result === 0) {
@@ -129,7 +129,7 @@ class Locker
         $script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end";
         try {
             $result = $this->client->eval($script, [$this->key, $this->value, (string) ((int) round($extension * 1000))], 1);
-        } catch (\RedisException $e) {
+        } catch (\RedisException|\RedisClusterException $e) {
             throw new \RuntimeException($e->getMessage(), 0, $e);
         }
         if ((int) $result === 0) {

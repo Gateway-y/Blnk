@@ -21,12 +21,12 @@ declare(strict_types=1);
 namespace Blnk\Internal\Redis;
 
 /**
- * Redis holds the Redis client and addresses of Redis instances.
+ * Redis struct holds the Redis client and addresses of Redis instances.
+ * It supports both single-instance Redis connections and Redis Cluster setups.
  *
- * Port of Go `redis_db.Redis`. The Go version wraps a
- * `redis.UniversalClient` (standalone or cluster); the PHP port wraps a
- * phpredis `\Redis` client and supports standalone servers only (see
- * {@see RedisDb::newRedisClient()} for the documented cluster divergence).
+ * Port of Go `redis_db.Redis`. The Go `redis.UniversalClient` (standalone or
+ * cluster) maps onto phpredis' `\Redis` (single address) or `\RedisCluster`
+ * (several addresses) — see {@see RedisDb::newRedisClient()}.
  */
 final class Redis
 {
@@ -37,30 +37,33 @@ final class Redis
      */
     private array $addresses;
 
-    /** The connected phpredis client. */
-    private \Redis $client;
+    /** Redis universal client (works for both single and clustered Redis). */
+    private \Redis|\RedisCluster $client;
 
     /**
      * @param string[] $addresses
      */
-    public function __construct(array $addresses, \Redis $client)
+    public function __construct(array $addresses, \Redis|\RedisCluster $client)
     {
         $this->addresses = $addresses;
         $this->client = $client;
     }
 
     /**
-     * Client returns the Redis client.
+     * Client returns the Redis universal client.
      * It can be used directly for Redis operations like Get, Set, or Publish.
+     *
+     * Returns:
+     * - The universal Redis client, which supports both standalone and clustered Redis instances.
      */
-    public function client(): \Redis
+    public function client(): \Redis|\RedisCluster
     {
         return $this->client;
     }
 
     /**
-     * MakeRedisClient returns the Redis client, allowing compatibility with
-     * other packages or tools (mirrors the Go `interface{}` return).
+     * MakeRedisClient returns the Redis client interface, allowing compatibility
+     * with other packages or tools (mirrors the Go `interface{}` return).
      */
     public function makeRedisClient(): mixed
     {
@@ -75,5 +78,11 @@ final class Redis
     public function addresses(): array
     {
         return $this->addresses;
+    }
+
+    /** Whether the wrapped client is a Redis Cluster client. */
+    public function isCluster(): bool
+    {
+        return $this->client instanceof \RedisCluster;
     }
 }

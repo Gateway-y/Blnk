@@ -48,7 +48,8 @@ final class RedisCache implements CacheInterface
     /** Local cache entry TTL, mirroring the Go TinyLFU 1-minute TTL. */
     private const LOCAL_TTL_SEC = 60;
 
-    private \Redis $client;
+    /** The standalone or cluster client of {@see RedisDb::newRedisClient()}. */
+    private \Redis|\RedisCluster $client;
 
     /**
      * Local in-process cache: key => [expiresAt (float unix ts), serialized value].
@@ -57,7 +58,7 @@ final class RedisCache implements CacheInterface
      */
     private array $local = [];
 
-    private function __construct(\Redis $client)
+    private function __construct(\Redis|\RedisCluster $client)
     {
         $this->client = $client;
     }
@@ -82,7 +83,7 @@ final class RedisCache implements CacheInterface
      * NewCacheWithClient creates a new RedisCache using an existing Redis client.
      * No exception is thrown because no I/O occurs — the client is already validated.
      */
-    public static function newCacheWithClient(\Redis $client): CacheInterface
+    public static function newCacheWithClient(\Redis|\RedisCluster $client): CacheInterface
     {
         return new self($client);
     }
@@ -124,7 +125,7 @@ final class RedisCache implements CacheInterface
             } else {
                 $ok = $this->client->set($key, $payload);
             }
-        } catch (\RedisException $e) {
+        } catch (\RedisException|\RedisClusterException $e) {
             throw new \RuntimeException(sprintf('cache set failed for key %s: %s', $key, $e->getMessage()), 0, $e);
         }
         if ($ok === false) {
@@ -150,7 +151,7 @@ final class RedisCache implements CacheInterface
         if ($payload === null) {
             try {
                 $raw = $this->client->get($key);
-            } catch (\RedisException $e) {
+            } catch (\RedisException|\RedisClusterException $e) {
                 throw new \RuntimeException(sprintf('cache get failed for key %s: %s', $key, $e->getMessage()), 0, $e);
             }
             if ($raw === false || !is_string($raw)) {
@@ -180,7 +181,7 @@ final class RedisCache implements CacheInterface
         unset($this->local[$key]);
         try {
             $this->client->del($key);
-        } catch (\RedisException $e) {
+        } catch (\RedisException|\RedisClusterException $e) {
             throw new \RuntimeException(sprintf('cache delete failed for key %s: %s', $key, $e->getMessage()), 0, $e);
         }
     }

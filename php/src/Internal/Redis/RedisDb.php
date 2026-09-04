@@ -24,16 +24,19 @@ namespace Blnk\Internal\Redis;
  * Port of Go `internal/redis-db` (`redisdb.go`): the package-level
  * `ParseRedisURL` and `NewRedisClient` functions, backed by phpredis.
  *
- * DIVERGENCE (documented per PORTING.md): the Go implementation returns a
- * go-redis `UniversalClient` and transparently supports Redis Cluster when
- * multiple addresses are supplied. The PHP port fully supports standalone
- * Redis (single address, TLS, auth, db selection); Redis Cluster/Sentinel
- * are NOT supported — passing multiple addresses throws a \RuntimeException.
+ * Like the Go `redis.UniversalClient`, a single address yields a standalone
+ * client (`\Redis`) and several addresses a Redis Cluster client
+ * (`\RedisCluster`), with the password of the first URL that has one and TLS
+ * enabled when any URL requires it. Redis Sentinel is not part of the Go
+ * code and remains unsupported.
  */
 final class RedisDb
 {
     /** Connection/ping validation budget, mirroring the Go 500ms ping context. */
     private const CONNECT_TIMEOUT_SEC = 0.5;
+
+    /** Key the cluster ping is routed by (any key: Go pings a random master). */
+    private const CLUSTER_PING_KEY = 'blnk';
 
     private function __construct()
     {
@@ -105,20 +108,20 @@ final class RedisDb
     }
 
     /**
-     * NewRedisClient creates a new Redis client connection based on the provided
-     * list of addresses.
+     * NewRedisClient creates a new Redis client connection based on the provided list of addresses.
+     * It automatically detects if the connection is for a single Redis instance or a Redis Cluster.
      *
      * Parameters:
-     * - $addresses: A list of Redis addresses. Only a single address (standalone
-     *   Redis) is supported by the PHP port — see the class-level divergence note.
+     * - $addresses: A list of Redis addresses. For a single Redis instance, provide one address.
      * - $skipTLSVerify: Whether to skip TLS certificate verification.
      * - $pool: Optional pool settings (kept for parity; phpredis has no
      *   client-side pool, so the values are recorded but not applied).
      *
+     * Returns:
+     * - A new Redis client wrapper.
+     *
      * @param string[] $addresses
-     * @throws \RuntimeException if the address list is empty, contains more than
-     *                           one address (cluster is unsupported), or the
-     *                           connection/ping fails.
+     * @throws \RuntimeException if the provided address is invalid or connection setup fails.
      */
     public static function newRedisClient(array $addresses, bool $skipTLSVerify = false, ?PoolConfig $pool = null): Redis
     {
@@ -136,17 +139,48 @@ final class RedisDb
             $pc->minIdleConns = 20;
         }
 
-        if (count($addresses) > 1) {
-            // Go builds a Redis Cluster client here; the PHP port does not
-            // support cluster mode (documented divergence).
-            throw new \RuntimeException('redis cluster mode (multiple addresses) is not supported by the PHP port; provide a single Redis address');
+        // If a single address is provided, use it to create a standalone Redis client
+        if (count($addresses) === 1) {
+            $opts = self::parseRedisURL($addresses[0], $skipTLSVerify);
+
+            $opts->poolSize = $pc->poolSize;
+            $opts->minIdleConns = $pc->minIdleConns;
+
+            $client = self::connect($opts);
+        } else {
+            // For multiple addresses, create a Redis Cluster client
+            // Parse each URL for cluster setup
+            $clusterAddrs = [];
+            $password = '';
+            $useTLS = false;
+
+            foreach ($addresses as $addr) {
+                $opts = self::parseRedisURL($addr, $skipTLSVerify);
+                $clusterAddrs[] = $opts->addr;
+
+                // Use the password from the first URL that has one
+                if ($password === '' && $opts->password !== '') {
+                    $password = $opts->password;
+                }
+
+                // Enable TLS if any URL requires it
+                if ($opts->useTLS) {
+                    $useTLS = true;
+                }
+            }
+
+            $tlsContext = null;
+            if ($useTLS) {
+                $tlsContext = [
+                    // tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: skipTLSVerify}
+                    'crypto_method' => STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT,
+                    'verify_peer' => !$skipTLSVerify,
+                    'verify_peer_name' => !$skipTLSVerify,
+                ];
+            }
+
+            $client = self::connectCluster($clusterAddrs, $password, $tlsContext);
         }
-
-        $opts = self::parseRedisURL($addresses[0], $skipTLSVerify);
-        $opts->poolSize = $pc->poolSize;
-        $opts->minIdleConns = $pc->minIdleConns;
-
-        $client = self::connect($opts);
 
         return new Redis($addresses, $client);
     }
@@ -193,6 +227,44 @@ final class RedisDb
             $client->ping();
         } catch (\RedisException $e) {
             throw new \RuntimeException(sprintf('redis connection to %s failed: %s', $opts->addr, $e->getMessage()), 0, $e);
+        }
+
+        return $client;
+    }
+
+    /**
+     * Establishes and validates a phpredis Redis Cluster connection (the
+     * `redis.NewUniversalClient(&redis.UniversalOptions{Addrs, Password,
+     * TLSConfig, ...})` of the Go multi-address branch).
+     *
+     * phpredis enables TLS on every node when an SSL context array is given
+     * (even an empty one); the seeds are plain host:port strings. The
+     * constructor already discovers the slot map from the seeds; the ping is
+     * routed by key to one of the masters, like go-redis' Ping on a cluster
+     * client.
+     *
+     * @param string[] $clusterAddrs host:port seeds
+     * @param array<string, mixed>|null $tlsContext SSL context options, null for plain TCP
+     *
+     * @throws \RuntimeException on connect/auth/ping failure.
+     */
+    private static function connectCluster(array $clusterAddrs, string $password, ?array $tlsContext): \RedisCluster
+    {
+        try {
+            $client = new \RedisCluster(
+                null,
+                $clusterAddrs,
+                self::CONNECT_TIMEOUT_SEC,
+                0.0,
+                false,
+                $password !== '' ? $password : null,
+                $tlsContext
+            );
+
+            // Verify the connection, mirroring the Go 500ms Ping.
+            $client->ping(self::CLUSTER_PING_KEY);
+        } catch (\RedisClusterException|\RedisException $e) {
+            throw new \RuntimeException(sprintf('redis cluster connection to %s failed: %s', implode(',', $clusterAddrs), $e->getMessage()), 0, $e);
         }
 
         return $client;

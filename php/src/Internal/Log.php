@@ -47,8 +47,12 @@ final class Log
      * levelFromEnv resolves BLNK_LOG_LEVEL to a Monolog level, defaulting to
      * Info when unset or unparseable. logrus aliases (warn, trace, panic, ...)
      * are mapped onto their closest Monolog equivalents.
+     *
+     * Public because logrus applies this level before its hooks fire, so
+     * additional handlers (the monitoring exporter log hook) use the same
+     * floor as the stderr handler.
      */
-    private static function levelFromEnv(): Level
+    public static function levelFromEnv(): Level
     {
         $name = getenv('BLNK_LOG_LEVEL');
         if ($name === false || $name === '') {

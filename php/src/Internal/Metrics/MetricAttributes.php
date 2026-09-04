@@ -22,7 +22,7 @@ namespace Blnk\Internal\Metrics;
 
 /**
  * Helper turning a metric attribute map (the OTel `attribute.KeyValue` set)
- * into a stable string key for in-memory aggregation.
+ * into a stable string key for in-memory aggregation, and back for export.
  */
 final class MetricAttributes
 {
@@ -40,5 +40,19 @@ final class MetricAttributes
         }
         ksort($attributes);
         return (string) json_encode($attributes, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+    }
+
+    /**
+     * decode is the inverse of {@see key()}: the attribute map of a series key.
+     *
+     * @return array<string, mixed>
+     */
+    public static function decode(string $key): array
+    {
+        if ($key === '') {
+            return [];
+        }
+        $decoded = json_decode($key, true);
+        return is_array($decoded) ? $decoded : [];
     }
 }

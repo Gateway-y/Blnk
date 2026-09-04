@@ -21,105 +21,77 @@ declare(strict_types=1);
 namespace Blnk\Internal\Metrics;
 
 use Blnk\Internal\Log;
+use Blnk\Internal\Traces\OtlpHttpClient;
+use Blnk\Internal\Traces\OtlpHttpConfig;
+use Blnk\Internal\Traces\OtlpTraceExporter;
 
 /**
- * MonitoringExporter is the logging STUB replacing Go
- * `internal/monitoringexporter` (`exporters.go` + `logs.go`), per PORTING.md:
- * "OTEL traces/metrics → no-op logger stubs".
- *
- * DIVERGENCE (documented): the Go package ships OTLP/HTTP trace and metric
- * exporters plus an asynchronous logrus hook that POSTs redacted log entries
- * to the remote monitoring endpoint. The PHP port performs NO remote export:
- * every entry point logs (at debug level) that the exporter is stubbed, and
- * {@see MonitoringExporter::fire()} only redacts and debug-logs the payload
- * locally. The DSN parsing ({@see MonitoringExporterConfig}) and redaction
- * ({@see Redact}) logic are ported faithfully so a real exporter can be
- * plugged in later.
+ * MonitoringExporter is the port of Go `internal/monitoringexporter`
+ * (`exporters.go` + `logs.go`): the OTLP/HTTP trace exporter and periodic
+ * metric reader targeting the remote monitoring sink described by a
+ * {@see MonitoringExporterConfig} (DSN `https://<write-key>@<host>/<project-id>`),
+ * and the log hook forwarding redacted log entries to it ({@see LogHook}).
  */
 final class MonitoringExporter
 {
-    private MonitoringExporterConfig $cfg;
-
-    private bool $closed = false;
-
-    private function __construct(MonitoringExporterConfig $cfg)
+    private function __construct()
     {
-        $this->cfg = $cfg;
     }
 
     /**
-     * NewLogHook mirrors Go `monitoringexporter.NewLogHook`: returns the stub
-     * hook without registering it anywhere.
-     */
-    public static function newLogHook(MonitoringExporterConfig $cfg): self
-    {
-        return new self($cfg);
-    }
-
-    /**
-     * InstallLogHook mirrors Go `monitoringexporter.InstallLogHook`. The Go
-     * version registers a logrus hook that forwards every entry to the remote
-     * sink; the PHP stub only announces itself.
-     */
-    public static function installLogHook(MonitoringExporterConfig $cfg): self
-    {
-        Log::get()->debug('monitoring exporter log hook stubbed (no remote log export in the PHP port)', [
-            'endpoint' => $cfg->endpoint,
-            'project_id' => $cfg->projectID,
-        ]);
-        return new self($cfg);
-    }
-
-    /**
-     * NewTraceExporter mirrors Go `monitoringexporter.NewTraceExporter`
-     * (an OTLP/HTTP span exporter). Stub: logs and returns null.
-     */
-    public static function newTraceExporter(MonitoringExporterConfig $cfg): mixed
-    {
-        Log::get()->debug('monitoring trace exporter stubbed (no OTLP export in the PHP port)', [
-            'endpoint' => $cfg->otlpSignalURL('traces'),
-        ]);
-        return null;
-    }
-
-    /**
-     * NewMetricReader mirrors Go `monitoringexporter.NewMetricReader`
-     * (a periodic OTLP/HTTP metric reader). Stub: logs and returns null.
-     */
-    public static function newMetricReader(MonitoringExporterConfig $cfg): mixed
-    {
-        Log::get()->debug('monitoring metric exporter stubbed (no OTLP export in the PHP port)', [
-            'endpoint' => $cfg->otlpSignalURL('metrics'),
-        ]);
-        return null;
-    }
-
-    /**
-     * Fire mirrors the Go `LogHook.Fire` shape (level + message + fields with
-     * redaction applied) but only debug-logs the sanitized payload locally
-     * instead of enqueueing an HTTP POST to `SignalURL("logs")`.
+     * NewTraceExporter creates an OTLP/HTTP trace exporter for remote monitoring:
      *
-     * @param array<string, mixed> $fields
+     *   otlptracehttp.New(ctx,
+     *       otlptracehttp.WithEndpointURL(cfg.OTLPSignalURL("traces")),
+     *       otlptracehttp.WithHeaders(cfg.Headers()),
+     *       otlptracehttp.WithTimeout(cfg.Timeout))
      */
-    public function fire(string $level, string $message, array $fields = []): void
+    public static function newTraceExporter(MonitoringExporterConfig $cfg, ?OtlpHttpClient $client = null): OtlpTraceExporter
     {
-        if ($this->closed) {
-            return;
-        }
-        Log::get()->debug('monitoring exporter stub: log entry not exported', [
-            'level' => $level,
-            'message' => Redact::redactString($message),
-            'fields' => Redact::redactFields($fields),
-            'target' => $this->cfg->signalURL('logs'),
-        ]);
+        return OtlpTraceExporter::create(static function (OtlpHttpConfig $c) use ($cfg): void {
+            $c->withEndpointURL($cfg->otlpSignalURL('traces'))
+                ->withHeaders($cfg->headers())
+                ->withTimeout((float) $cfg->timeout);
+        }, $client);
     }
 
     /**
-     * Shutdown mirrors Go `LogHook.Shutdown`: marks the hook closed. There is
-     * no queue to drain in the stub.
+     * NewMetricReader creates an OTLP/HTTP metric reader for remote monitoring:
+     * a periodic reader (60s interval, cfg.Timeout) over
+     *
+     *   otlpmetrichttp.New(ctx,
+     *       otlpmetrichttp.WithEndpointURL(cfg.OTLPSignalURL("metrics")),
+     *       otlpmetrichttp.WithHeaders(cfg.Headers()),
+     *       otlpmetrichttp.WithTimeout(cfg.Timeout))
      */
-    public function shutdown(): void
+    public static function newMetricReader(MonitoringExporterConfig $cfg, ?OtlpHttpClient $client = null): PeriodicReader
     {
-        $this->closed = true;
+        $exporter = OtlpMetricExporter::create(static function (OtlpHttpConfig $c) use ($cfg): void {
+            $c->withEndpointURL($cfg->otlpSignalURL('metrics'))
+                ->withHeaders($cfg->headers())
+                ->withTimeout((float) $cfg->timeout);
+        }, $client);
+
+        return new PeriodicReader($exporter, 60.0, (float) $cfg->timeout);
+    }
+
+    /**
+     * NewLogHook mirrors `monitoringexporter.NewLogHook`: the hook, not yet
+     * attached to any logger.
+     */
+    public static function newLogHook(MonitoringExporterConfig $cfg): LogHook
+    {
+        return new LogHook($cfg);
+    }
+
+    /**
+     * InstallLogHook mirrors `monitoringexporter.InstallLogHook`: creates the
+     * hook and registers it on the process logger (`logrus.AddHook(h)`).
+     */
+    public static function installLogHook(MonitoringExporterConfig $cfg): LogHook
+    {
+        $h = self::newLogHook($cfg);
+        Log::get()->pushHandler($h);
+        return $h;
     }
 }

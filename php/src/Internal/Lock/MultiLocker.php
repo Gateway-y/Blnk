@@ -29,7 +29,7 @@ namespace Blnk\Internal\Lock;
  */
 class MultiLocker
 {
-    protected \Redis $client;
+    protected \Redis|\RedisCluster $client;
 
     /** @var Locker[] */
     protected array $lockers;
@@ -51,7 +51,7 @@ class MultiLocker
      *
      * @param string[] $keys
      */
-    public function __construct(\Redis $client, array $keys, string $value)
+    public function __construct(\Redis|\RedisCluster $client, array $keys, string $value)
     {
         // Deduplicate keys
         $seen = [];

@@ -81,13 +81,15 @@ final class Clock
         if ($u === null) {
             return self::MaxDuration;
         }
-        $d = $t - $u;
-        if (is_float($d)) {
-            // int overflow: PHP promotes to float where Go saturates.
-            return $d > 0 ? self::MaxDuration : self::MinDuration;
+        // int overflow: PHP would promote to float where Go saturates.
+        if ($u > 0 && $t < PHP_INT_MIN + $u) {
+            return self::MinDuration;
+        }
+        if ($u < 0 && $t > PHP_INT_MAX + $u) {
+            return self::MaxDuration;
         }
 
-        return $d;
+        return $t - $u;
     }
 
     /**
@@ -95,12 +97,14 @@ final class Clock
      */
     public static function add(int $t, int $d): int
     {
-        $r = $t + $d;
-        if (is_float($r)) {
-            return $r > 0 ? PHP_INT_MAX : PHP_INT_MIN;
+        if ($d > 0 && $t > PHP_INT_MAX - $d) {
+            return PHP_INT_MAX;
+        }
+        if ($d < 0 && $t < PHP_INT_MIN - $d) {
+            return PHP_INT_MIN;
         }
 
-        return $r;
+        return $t + $d;
     }
 
     /**
