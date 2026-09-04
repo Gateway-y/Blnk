@@ -1,0 +1,4 @@
+/vendor/
+/blnk.json
+*.cache
+.phpunit.result.cache

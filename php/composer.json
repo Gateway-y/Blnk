@@ -1,0 +1,41 @@
+{
+    "name": "blnk/blnk-php",
+    "description": "Blnk - open-source financial ledger for developers (PHP port of the Go implementation)",
+    "type": "project",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.2",
+        "ext-pdo": "*",
+        "ext-pdo_pgsql": "*",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "ext-redis": "*",
+        "ext-openssl": "*",
+        "brick/math": "^0.12",
+        "ramsey/uuid": "^4.7",
+        "monolog/monolog": "^3.5",
+        "slim/slim": "^4.12",
+        "slim/psr7": "^1.6",
+        "guzzlehttp/guzzle": "^7.8",
+        "dragonmantank/cron-expression": "^3.3"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Blnk\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Blnk\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/blnk"
+    ],
+    "config": {
+        "sort-packages": true
+    }
+}
