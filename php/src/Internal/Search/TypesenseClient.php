@@ -358,12 +358,16 @@ final class TypesenseClient
         if (array_key_exists('meta_data', $data)) {
             $metaData = $data['meta_data'];
             if ($metaData === null) {
-                // If metadata is null, provide an empty object for object type schemas
-                $data['meta_data'] = [];
+                // If metadata is null, provide an empty object for object type
+                // schemas (Go's empty map marshals as {}; a PHP empty array
+                // would marshal as []).
+                $data['meta_data'] = new \stdClass();
             } elseif (is_array($metaData) && !array_is_list($metaData)) {
                 $data['meta_data'] = $metaData;
+            } elseif ($metaData instanceof \stdClass) {
+                $data['meta_data'] = $metaData;
             } elseif (is_array($metaData) && $metaData === []) {
-                $data['meta_data'] = [];
+                $data['meta_data'] = new \stdClass();
             } else {
                 // For backward compatibility, convert to string for old schemas
                 try {
