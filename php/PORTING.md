@@ -147,7 +147,8 @@ Go uses hibiken/asynq. PHP port implements the same semantics on raw Redis:
   prefix).
 - Migrations in `php/sql/` are the exact Go `sql/` files; the migrate command
   (`blnk migrate up`) applies them in filename order recording applied ids in
-  `blnk.schema_migrations` compatible with golang-migrate's table if present.
+  `blnk.gorp_migrations`, the same table (and row format) the Go sql-migrate
+  based `blnk migrate` uses, so both binaries can be pointed at one database.
 
 ## What is intentionally adapted (documented divergences)
 
