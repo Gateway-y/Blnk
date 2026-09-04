@@ -32,10 +32,11 @@ use Blnk\Cmd\CertMagic\Acmez\TlsAlpn01;
 final class TlsConfig
 {
     /**
-     * GetCertificate returns the certificate to use for the ClientHello's
-     * server name (Go: `tls.Config.GetCertificate`).
+     * GetCertificate returns the certificate to use to complete the
+     * ClientHello's handshake, or throws when none is available
+     * (Go: `tls.Config.GetCertificate`; {@see Config::getCertificate()}).
      *
-     * @var callable(string): ?Certificate
+     * @var callable(ClientHelloInfo): Certificate
      */
     public $getCertificate;
 
@@ -80,7 +81,7 @@ final class TlsConfig
     public bool $preferServerCipherSuites = true;
 
     /**
-     * @param callable(string): ?Certificate $getCertificate
+     * @param callable(ClientHelloInfo): Certificate $getCertificate
      * @param callable(): Certificate[] $certificates
      */
     public function __construct(callable $getCertificate, callable $certificates)

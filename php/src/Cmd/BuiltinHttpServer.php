@@ -52,6 +52,9 @@ final class BuiltinHttpServer
     public const ModeBuiltin = 'builtin';
     public const ModeExternal = 'external';
 
+    /** PHP-only: serve HTTPS in-process with CertMagic ({@see ServerCommand::serveTLS()}). */
+    public const ModeTLS = 'tls';
+
     /** Router script of the built-in server, relative to the document root. */
     public const RouterScript = 'index.php';
 

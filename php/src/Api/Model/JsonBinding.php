@@ -159,6 +159,7 @@ final class JsonBinding
     private static function isBigIntLiteral(mixed $value): bool
     {
         return \is_string($value)
+            && is_numeric($value)
             && preg_match('/^-?[0-9]+$/', $value) === 1
             && !\is_int($value + 0);
     }

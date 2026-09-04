@@ -555,7 +555,7 @@ trait TransactionInflight
 
             if ($withQueue) {
                 try {
-                    $this->enqueueTransactions($transaction, []);
+                    self::enqueueTransactions($this->queue, $transaction, []);
                 } catch (\Throwable $err) {
                     $span->recordError($err);
                     throw $this->logAndRecordError($span, 'failed to enqueue transaction', $err);

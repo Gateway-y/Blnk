@@ -83,6 +83,18 @@ final class SolverRegistry
         return self::$activeChallenges[$identifier] ?? null;
     }
 
+    /**
+     * activeChallenges returns every challenge currently being solved by
+     * this process, keyed by identifier (PHP-only: the HTTPS server reads it
+     * to refresh the certificates it can present).
+     *
+     * @return array<string, ActiveChallenge>
+     */
+    public static function activeChallenges(): array
+    {
+        return self::$activeChallenges;
+    }
+
     /** setActiveChallenge records a challenge as active under its key. */
     public static function setActiveChallenge(string $key, Challenge $challenge): void
     {

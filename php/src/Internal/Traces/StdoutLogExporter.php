@@ -29,13 +29,13 @@ namespace Blnk\Internal\Traces;
  */
 final class StdoutLogExporter implements LogExporterInterface
 {
-    /** @var resource|null */
+    /** @var mixed stream resource or null */
     private $stream = null;
 
     private bool $stopped = false;
 
     /**
-     * @param resource|null $stream defaults to php://stdout
+     * @param mixed $stream stream resource (or null); defaults to php://stdout
      */
     public function __construct($stream = null)
     {
@@ -78,7 +78,7 @@ final class StdoutLogExporter implements LogExporterInterface
     }
 
     /**
-     * @return resource|null
+     * @return mixed stream resource or null
      */
     private function stream()
     {

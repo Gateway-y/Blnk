@@ -73,7 +73,7 @@ final class Locks
                 $storage->unlock($lockKey);
             } catch (\Throwable $err) {
                 Log::get()->error('unable to clean up lock in storage backend', [
-                    'storage' => (string) $storage,
+                    'storage' => ($storage instanceof \Stringable ? (string) $storage : $storage::class),
                     'lock_key' => $lockKey,
                     'error' => $err->getMessage(),
                 ]);

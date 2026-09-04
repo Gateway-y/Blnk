@@ -23,6 +23,8 @@ namespace Blnk\Cmd;
 use Blnk\Api\Api;
 use Blnk\Api\Json;
 use Blnk\Api\Middleware\MetricsAuth;
+use Blnk\Cmd\CertMagic\CertMagic;
+use Blnk\Cmd\CertMagic\FileStorage;
 use Blnk\Config\Configuration;
 use Blnk\Config\ServerConfig;
 use Blnk\Core\ChainProcessor;
@@ -60,7 +62,9 @@ use Slim\App;
  * FastCGI front end; `fastcgi_finish_request` lets deferred work run after
  * the response) and run `BLNK_HTTP_SERVER=external blnk start` for the
  * background processors — the built-in server is single-threaded and meant
- * for development/compose setups.
+ * for development/compose setups. `BLNK_HTTP_SERVER=tls` serves the API
+ * over HTTPS from this process with CertMagic-managed certificates
+ * ({@see serveTLS()}).
  */
 final class ServerCommand
 {
@@ -127,16 +131,26 @@ final class ServerCommand
      * It accepts a gin.Engine instance as the router and a ServerConfig struct for server configurations.
      * If no domain is specified, the server will default to running on localhost.
      *
-     * PHP port: automatic ACME certificate management has no equivalent for
-     * the built-in server; TLS is terminated by the reverse proxy in front of
-     * public/index.php. The function resolves the same settings as Go and then
-     * fails explicitly. (Go's `start` command never calls serveTLS either.)
+     * PHP port: CertMagic is ported under {@see \Blnk\Cmd\CertMagic} (ACME
+     * account/order flow, HTTP-01 and TLS-ALPN-01 solvers, file storage,
+     * renewal maintenance) and the HTTPS server is the in-process
+     * {@see HttpsServer}, which selects certificates per handshake from the
+     * peeked ClientHello. Go's `ListenAndServeTLS` blocks forever; the port
+     * serves until `$quit` reports true (PHP-only), running `$onIdle` and the
+     * certificate maintenance on every loop iteration.
      *
-     * @throws \RuntimeException always
+     * @param callable(): bool|null $quit PHP-only: stops the server (SIGINT/SIGTERM trap)
+     * @param callable(): void|null $onIdle PHP-only: the background processors of `blnk start`
+     * @throws \RuntimeException when certificates cannot be obtained ("ManageSync" errors) or the server cannot start
      */
-    public static function serveTLS(App $r, ServerConfig $conf): void
+    public static function serveTLS(App $r, ServerConfig $conf, ?callable $quit = null, ?callable $onIdle = null): void
     {
-        $storagePath = self::resolveCertStoragePath($conf);
+        // Configure CertMagic's ACME (Automatic Certificate Management Environment) for automatic TLS
+        CertMagic::defaultACME()->agreed = true; // Agree to ACME TOS
+        CertMagic::defaultACME()->email = $conf->email; // Set email for certificate recovery/notifications
+        $cfg = CertMagic::newDefault();
+
+        $cfg->storage = new FileStorage(self::resolveCertStoragePath($conf));
 
         // Define domain(s) for the certificate
         if ($conf->domain === '') {
@@ -144,12 +158,33 @@ final class ServerCommand
         }
         $domains = self::resolveTLSDomains($conf);
 
-        throw new \RuntimeException(sprintf(
-            'serveTLS: automatic TLS (CertMagic/ACME for %s, email %s, storage %s) is not available in the PHP port; terminate TLS at the reverse proxy in front of public/index.php',
-            implode(',', $domains),
-            $conf->email,
-            $storagePath
-        ));
+        // Manage TLS certificates for the specified domains
+        $cfg->manageSync($domains);
+
+        // Create and configure the HTTPS server
+        $server = new HttpsServer(
+            ':' . $conf->port, // Server address and port
+            static function (ServerRequestInterface $request) use ($r): ResponseInterface {
+                return $r->handle($request); // Handler for HTTP requests (gin router)
+            },
+            $cfg->tlsConfig() // TLS configuration from CertMagic
+        );
+
+        Log::get()->error(sprintf("Starting HTTPS server on %s\n", $conf->port));
+        // Start the HTTPS server with automatic certificate management
+        try {
+            $server->listenAndServeTLS($quit, static function () use ($cfg, $onIdle): void {
+                $cfg->certCache?->maintainAssets(); // Go: the cache's maintenance goroutine
+                if ($onIdle !== null) {
+                    $onIdle();
+                }
+            });
+        } catch (\Throwable $err) {
+            Log::get()->critical(sprintf('Failed to start HTTPS server: %s', $err->getMessage()));
+            throw new \RuntimeException(sprintf('Failed to start HTTPS server: %s', $err->getMessage()), 0, $err);
+        } finally {
+            $server->close();
+        }
     }
 
     /**
@@ -586,8 +621,22 @@ final class ServerCommand
 
             // Start server
             $env = $b->configFile !== '' ? ['BLNK_CONFIG' => $b->configFile] : [];
+            $onIdle = self::backgroundTicker($cfg, $lineageProcessor, $chainProcessor, $phClient);
             try {
-                self::startServer($router, $cfg->server->port, $env, self::backgroundTicker($cfg, $lineageProcessor, $chainProcessor, $phClient));
+                $mode = getenv(BuiltinHttpServer::ModeEnv);
+                if (\is_string($mode) && strtolower(trim($mode)) === BuiltinHttpServer::ModeTLS) {
+                    // PHP-only mode: serve the API over HTTPS in-process with
+                    // CertMagic-managed certificates (Go defines serveTLS but its
+                    // `start` command never calls it).
+                    $quit = SignalTrap::install([SignalTrap::SIGINT, SignalTrap::SIGTERM]);
+                    try {
+                        self::serveTLS($router, $cfg->server, static fn (): bool => $quit->done(), $onIdle);
+                    } finally {
+                        $quit->release();
+                    }
+                } else {
+                    self::startServer($router, $cfg->server->port, $env, $onIdle);
+                }
             } catch (\Throwable $err) {
                 Log::get()->critical($err->getMessage());
                 return 1;
