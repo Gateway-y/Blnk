@@ -27,8 +27,8 @@ use Blnk\Model\Transaction;
 use Brick\Math\BigInteger;
 
 /**
- * RecordTransaction is the request payload of POST /transactions
- * (Go: api/model/transaction.go `RecordTransaction`).
+ * RecordTransaction is the request payload of POST /transactions and of every
+ * item of POST /transactions/bulk (Go: api/model/transaction.go `RecordTransaction`).
  */
 final class RecordTransaction implements \JsonSerializable
 {
@@ -118,7 +118,8 @@ final class RecordTransaction implements \JsonSerializable
     }
 
     /**
-     * distributionsFromArray binds a `[]model.Distribution` field.
+     * distributionsFromArray binds a `[]model.Distribution` field (a JSON
+     * null element decodes to the zero Distribution, as in Go).
      *
      * @param array<string, mixed> $data
      *
@@ -135,7 +136,7 @@ final class RecordTransaction implements \JsonSerializable
         $path = $struct . '.' . $key;
         $out = [];
         foreach ($items as $item) {
-            $item = $item ?? [];
+            $item ??= [];
             $d = new Distribution();
             $d->identifier = JsonBinding::string($item, 'identifier', $path);
             $d->distribution = JsonBinding::string($item, 'distribution', $path);

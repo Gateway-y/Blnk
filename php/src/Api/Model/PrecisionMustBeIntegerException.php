@@ -24,12 +24,18 @@ namespace Blnk\Api\Model;
  * PrecisionMustBeIntegerException is the port of the api/model sentinel
  * `ErrPrecisionMustBeInteger = errors.New("precision must be an integer value")`.
  * `errors.Is(err, ErrPrecisionMustBeInteger)` becomes an instanceof check on
- * the exception chain.
+ * the exception chain (see {@see \Blnk\Api\Errors::classifySentinel()}).
  */
 final class PrecisionMustBeIntegerException extends \RuntimeException
 {
+    /** The Go sentinel's message. */
+    public const MESSAGE = 'precision must be an integer value';
+
+    /** Go name of the sentinel, for call sites that spell it out. */
+    public const ErrPrecisionMustBeInteger = self::MESSAGE;
+
     public function __construct(?\Throwable $previous = null)
     {
-        parent::__construct(Model::ErrPrecisionMustBeInteger, 0, $previous);
+        parent::__construct(self::MESSAGE, 0, $previous);
     }
 }

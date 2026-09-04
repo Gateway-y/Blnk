@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 namespace Blnk\Api;
 
+use Blnk\Api\Model\JsonBinding;
 use Blnk\Internal\Filter\QueryFilter;
 
 /**
@@ -51,42 +52,37 @@ final class FilterRequest implements \JsonSerializable
 
     /**
      * @param array<string, mixed> $data
-     * @throws BindingException on a wrong JSON kind (encoding/json semantics)
+     * @throws \RuntimeException on a wrong JSON kind (encoding/json semantics)
      */
-    public static function fromArray(array $data): self
+    public static function fromArray(array $data, string $struct = 'FilterRequest'): self
     {
-        $struct = 'FilterRequest';
         $req = new self();
-        $items = Binding::objectArray($data, 'filters', $struct, 'filter.QueryFilter');
+        $items = JsonBinding::objectList($data, 'filters', $struct, 'filter.QueryFilter');
         if ($items !== null) {
             $req->filters = [];
+            $filterStruct = $struct . '.filters';
             foreach ($items as $item) {
-                if ($item === null) {
-                    // a JSON null element decodes to the zero QueryFilter
-                    $req->filters[] = new QueryFilter();
-                    continue;
-                }
-                $filterStruct = 'FilterRequest.filters';
+                $item = $item ?? []; // a JSON null element decodes to the zero QueryFilter
                 $filter = new QueryFilter(
-                    Binding::string($item, 'field', $filterStruct),
-                    Binding::string($item, 'operator', $filterStruct)
+                    JsonBinding::string($item, 'field', $filterStruct),
+                    JsonBinding::string($item, 'operator', $filterStruct)
                 );
                 $filter->value = $item['value'] ?? null;
                 if (Binding::has($item, 'values')) {
                     if (!is_array($item['values']) || (count($item['values']) > 0 && !array_is_list($item['values']))) {
-                        throw Binding::typeError(Binding::kindOf($item['values']), $filterStruct, 'values', '[]interface {}');
+                        throw Binding::typeError($item['values'], $filterStruct, 'values', '[]interface {}');
                     }
                     $filter->values = array_values($item['values']);
                 }
                 $req->filters[] = $filter;
             }
         }
-        $req->logicalOperator = Binding::string($data, 'logical_operator', $struct);
+        $req->logicalOperator = JsonBinding::string($data, 'logical_operator', $struct);
         $req->limit = Binding::int($data, 'limit', $struct);
         $req->offset = Binding::int($data, 'offset', $struct);
-        $req->sortBy = Binding::string($data, 'sort_by', $struct);
-        $req->sortOrder = Binding::string($data, 'sort_order', $struct);
-        $req->includeCount = Binding::bool($data, 'include_count', $struct);
+        $req->sortBy = JsonBinding::string($data, 'sort_by', $struct);
+        $req->sortOrder = JsonBinding::string($data, 'sort_order', $struct);
+        $req->includeCount = JsonBinding::bool($data, 'include_count', $struct);
 
         return $req;
     }

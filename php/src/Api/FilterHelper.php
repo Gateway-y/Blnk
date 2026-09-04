@@ -92,12 +92,13 @@ final class FilterHelper
      * Returns the QueryFilterSet, QueryOptions, limit, offset (Go: plus an error, thrown here).
      *
      * @return array{0: QueryFilterSet, 1: QueryOptions, 2: int, 3: int}
-     * @throws BindingException on a JSON binding failure
+     * @throws BindingException on a JSON binding failure (also thrown as a plain
+     *                          \RuntimeException by the field readers for type mismatches)
      * @throws \RuntimeException "invalid logical_operator: must be 'and' or 'or'"
      */
     public static function parseFiltersFromBody(ServerRequestInterface $request, string $table): array
     {
-        $req = FilterRequest::fromArray(Binding::shouldBindJSONObject($request, 'api.FilterRequest'));
+        $req = FilterRequest::fromArray(Binding::shouldBindJSON($request, 'api.FilterRequest'));
 
         // Apply defaults
         $limit = $req->limit;

@@ -53,7 +53,7 @@ final class BulkTransactionRequest implements \JsonSerializable
     public static function fromArray(array $data, string $struct = 'BulkTransactionRequest'): self
     {
         $r = new self();
-        $items = JsonBinding::objectList($data, 'transactions', $struct, '*model.RecordTransaction', true);
+        $items = JsonBinding::objectList($data, 'transactions', $struct, 'model.RecordTransaction', true);
         if ($items !== null) {
             $r->transactions = [];
             foreach ($items as $item) {

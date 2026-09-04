@@ -38,8 +38,10 @@ use Slim\Psr7\Factory\ResponseFactory;
  * Uncaught PHP exceptions are the counterpart of Go panics. Slim's routing
  * exceptions are also translated here to Gin's defaults (`404 page not found`
  * for unknown routes; a method mismatch is a 404 too because Gin's
- * HandleMethodNotAllowed is off), although the catch-all NoRoute handler
- * registered in {@see Api::router()} normally answers those first.
+ * HandleMethodNotAllowed is off). Slim routes inside the middleware chain, so
+ * by the time the exception reaches this middleware the auth, rate-limit and
+ * security-header middleware have run for the request just as they do for
+ * Gin's NoRoute handler.
  */
 final class LogrusRecovery implements MiddlewareInterface
 {
@@ -59,7 +61,8 @@ final class LogrusRecovery implements MiddlewareInterface
         try {
             return $handler->handle($request);
         } catch (HttpNotFoundException | HttpMethodNotAllowedException) {
-            return Json::text((new ResponseFactory())->createResponse(), 404, self::NotFoundBody);
+            // Gin's NoRoute: the security headers were set before routing.
+            return SecurityHeaders::apply(Json::text((new ResponseFactory())->createResponse(), 404, self::NotFoundBody), $request);
         } catch (\Throwable $recovered) {
             Log::get()->error('panic recovered', [
                 'method' => $request->getMethod(),
