@@ -506,14 +506,17 @@ final class ModelHelpers
     private static function parseFixedAmount(Distribution $dist, BigDecimal $precisionDec): BigDecimal
     {
         if ($dist->preciseDistribution !== '') {
-            // Go: strconv.ParseInt(value, 10, 64)
-            if (preg_match('/^[+-]?[0-9]+$/', $dist->preciseDistribution) !== 1
-                || BigInteger::of($dist->preciseDistribution)->compareTo(BigInteger::of(PHP_INT_MAX)) > 0
-                || BigInteger::of($dist->preciseDistribution)->compareTo(BigInteger::of(PHP_INT_MIN)) < 0
+            // Go: strconv.ParseInt(value, 10, 64) — digits with optional sign, within int64 range.
+            if (preg_match('/^[+-]?[0-9]+$/', $dist->preciseDistribution) !== 1) {
+                throw new \RuntimeException('invalid precise_distribution format: must be an integer value in minor units');
+            }
+            $preciseAmount = BigInteger::of($dist->preciseDistribution);
+            if ($preciseAmount->compareTo(BigInteger::of(PHP_INT_MAX)) > 0
+                || $preciseAmount->compareTo(BigInteger::of(PHP_INT_MIN)) < 0
             ) {
                 throw new \RuntimeException('invalid precise_distribution format: must be an integer value in minor units');
             }
-            return BigDecimal::of($dist->preciseDistribution);
+            return $preciseAmount->toBigDecimal();
         }
 
         if ($dist->distribution !== '') {
