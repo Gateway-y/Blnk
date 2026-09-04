@@ -28,6 +28,8 @@ namespace Blnk\Cmd\CertMagic\Acme;
  *
  * (acmez acme/problem.go; it is an exception so it can be thrown and found
  * again in a wrapped error chain with {@see from()} — Go's `errors.As`.)
+ 
+ * @phpstan-consistent-constructor
  */
 class Problem extends \RuntimeException
 {

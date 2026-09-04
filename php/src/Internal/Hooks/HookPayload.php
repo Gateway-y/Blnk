@@ -76,9 +76,8 @@ final class HookPayload implements \JsonSerializable
         $out = [
             'transaction_id' => $this->transactionId,
             'hook_type' => $this->hookType,
-            'timestamp' => $this->timestamp === null
-                ? '0001-01-01T00:00:00Z'
-                : $this->timestamp->format(\DateTimeInterface::RFC3339),
+            // time.Time marshals as RFC3339Nano ("Z" for UTC); the zero value as 0001-01-01T00:00:00Z.
+            'timestamp' => \Blnk\Model\ModelHelpers::goTimeString($this->timestamp),
         ];
         if ($this->data !== null) {
             $out['data'] = $this->data;

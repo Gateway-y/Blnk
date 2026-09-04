@@ -42,7 +42,7 @@ use Blnk\Internal\PgConn\PgConn;
  * Go's `db.Begin()` / `tx.Commit()` / `tx.Rollback()` map onto
  * `$this->conn->beginTransaction()` / `commit()` / `rollBack()`.
  */
-class Datasource implements DataSourceInterface
+final class Datasource implements DataSourceInterface
 {
     use LedgerRepository;
     use BalanceRepository;
@@ -102,9 +102,8 @@ class Datasource implements DataSourceInterface
      */
     public function close(): void
     {
-        if (isset($this->conn)) {
-            unset($this->conn);
-        }
+        // Dropping the reference releases the PDO connection (Go: d.Conn.Close()).
+        unset($this->conn);
     }
 
     /**

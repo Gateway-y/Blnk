@@ -76,6 +76,8 @@ use Blnk\Model\Transaction;
  *  - Popping from several queues polls them round-robin at equal priority;
  *    asynq's queue weights/strict priority are not implemented.
  *  - Unsupported asynq options: Unique, Retention, Deadline, Timeout, Group.
+ 
+ * @phpstan-consistent-constructor
  */
 class Queue
 {

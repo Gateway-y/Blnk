@@ -156,7 +156,7 @@ final class Notification
         if ($sender !== null && (string) $conf->notification->webhook->url !== '') {
             $payload = [
                 'error' => $systemError->getMessage(),
-                'time' => (new \DateTimeImmutable('now'))->format(\DateTimeInterface::RFC3339),
+                'time' => \Blnk\Model\ModelHelpers::goTimeString(new \DateTimeImmutable('now')), // Go: time.Now() marshalled by encoding/json
             ];
             try {
                 $sender('system.error', $payload);

@@ -75,11 +75,11 @@ class ApiErrorException extends \RuntimeException implements \JsonSerializable
      * Mirrors Go `apierror.NewAPIError`; the returned exception is meant to be
      * thrown by the caller.
      */
-    public static function newApiError(string $code, string $message, mixed $details = null): static
+    public static function newApiError(string $code, string $message, mixed $details = null): self
     {
         // Log the error details for monitoring and debugging.
         Log::get()->error('API error', ['details' => $details]);
-        return new static($code, $message, $details);
+        return new self($code, $message, $details);
     }
 
     /**

@@ -123,9 +123,8 @@ final class IndexBatch implements \JsonSerializable
             'id' => $this->id,
             'dependencies' => $this->dependencies,
             'primary' => $this->primary,
-            'created_at' => $this->createdAt === null
-                ? '0001-01-01T00:00:00Z'
-                : $this->createdAt->format(\DateTimeInterface::RFC3339),
+            // time.Time marshals as RFC3339Nano ("Z" for UTC); the zero value as 0001-01-01T00:00:00Z.
+            'created_at' => \Blnk\Model\ModelHelpers::goTimeString($this->createdAt),
         ];
     }
 }

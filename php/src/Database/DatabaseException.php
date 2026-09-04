@@ -47,7 +47,7 @@ class DatabaseException extends ApiErrorException
      * Wraps a PDOException preserving its message and SQLSTATE.
      * (PDOException::$code / errorInfo[0] carries the SQLSTATE for pdo_pgsql.)
      */
-    public static function fromPDOException(\PDOException $e): static
+    public static function fromPDOException(\PDOException $e): self
     {
         $sqlState = null;
         if (isset($e->errorInfo[0]) && is_string($e->errorInfo[0])) {
@@ -55,7 +55,7 @@ class DatabaseException extends ApiErrorException
         } elseif (is_string($e->getCode()) && $e->getCode() !== '') {
             $sqlState = (string) $e->getCode();
         }
-        return new static($e->getMessage(), $sqlState, null, $e);
+        return new self($e->getMessage(), $sqlState, null, $e);
     }
 
     /**

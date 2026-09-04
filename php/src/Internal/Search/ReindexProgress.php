@@ -63,11 +63,10 @@ final class ReindexProgress implements \JsonSerializable
         if ($this->errors !== []) {
             $out['errors'] = $this->errors;
         }
-        $out['started_at'] = $this->startedAt === null
-            ? '0001-01-01T00:00:00Z'
-            : $this->startedAt->format(\DateTimeInterface::RFC3339);
+        // time.Time marshals as RFC3339Nano ("Z" for UTC); the zero value as 0001-01-01T00:00:00Z.
+        $out['started_at'] = \Blnk\Model\ModelHelpers::goTimeString($this->startedAt);
         if ($this->completedAt !== null) {
-            $out['completed_at'] = $this->completedAt->format(\DateTimeInterface::RFC3339);
+            $out['completed_at'] = \Blnk\Model\ModelHelpers::goTimeString($this->completedAt);
         }
 
         return $out;

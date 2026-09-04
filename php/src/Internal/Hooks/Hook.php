@@ -120,6 +120,7 @@ final class Hook implements \JsonSerializable
             return self::ZERO_TIME;
         }
 
-        return $t->format(\DateTimeInterface::RFC3339);
+        // encoding/json emits RFC3339Nano with "Z" for UTC (no "+00:00").
+        return \Blnk\Model\ModelHelpers::goTimeString($t);
     }
 }

@@ -95,6 +95,8 @@ use GuzzleHttp\ClientInterface;
  * Redis lists (`blnk:queue:<queue_name>`, see {@see Queue} and
  * {@see WebhookService::sendWebhook()}), so `$asynqClient` is the phpredis
  * connection those envelopes are pushed on.
+ 
+ * @phpstan-consistent-constructor
  */
 class Blnk
 {
